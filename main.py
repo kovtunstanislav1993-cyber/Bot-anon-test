@@ -3,7 +3,7 @@ import logging
 import os
 import sys
 from aiogram import Bot, Dispatcher, types
-from aiogram.filters import CommandStart
+from aiogram.filters import CommandStart, Text
 from aiogram.fsm.context import FSMContext
 from aiogram.fsm.storage.memory import MemoryStorage
 from aiogram.types import ReplyKeyboardMarkup, KeyboardButton, InlineKeyboardMarkup, InlineKeyboardButton
@@ -11,19 +11,19 @@ from aiogram.types import ReplyKeyboardMarkup, KeyboardButton, InlineKeyboardMar
 from database import init_db, get_user, save_user, is_vip_user
 from states import Form
 
-# ====================== ЛОГИ ДЛЯ BOTHOST ======================
-print("=== BOT STARTED SUCCESSFULLY ON BOTHOST ===")
+# Логи для Bothost — обязательно stdout
+print("=== BOT STARTED ===")
 logging.basicConfig(
-    level=logging.INFO,
+    level=logging.DEBUG,
     format='%(asctime)s - %(levelname)s - %(message)s',
     handlers=[logging.StreamHandler(sys.stdout)]
 )
-logging.info("Бот запущен | Токен подхвачен | Логирование активно")
+logging.info("Логирование активно | DEBUG включен")
 
 TOKEN = os.getenv("BOT_TOKEN")
 if not TOKEN:
-    logging.error("BOT_TOKEN НЕ НАЙДЕН!")
-    raise ValueError("BOT_TOKEN не найден в переменных окружения!")
+    logging.critical("BOT_TOKEN НЕ НАЙДЕН!")
+    sys.exit(1)
 
 bot = Bot(token=TOKEN)
 dp = Dispatcher(storage=MemoryStorage())
@@ -33,11 +33,13 @@ active_chats = {}
 blocked = set()
 matchmaking_task = None
 
-# ====================== КЛАВИАТУРЫ ======================
 gender_kb = ReplyKeyboardMarkup(
-    keyboard=[[KeyboardButton(text="Мужчина"), KeyboardButton(text="Женщина")],
-              [KeyboardButton(text="Другой")]],
-    resize_keyboard=True, one_time_keyboard=True
+    keyboard=[
+        [KeyboardButton(text="Мужчина"), KeyboardButton(text="Женщина")],
+        [KeyboardButton(text="Другой")]
+    ],
+    resize_keyboard=True,
+    one_time_keyboard=True
 )
 
 age_kb = InlineKeyboardMarkup(inline_keyboard=[
@@ -49,14 +51,15 @@ age_kb = InlineKeyboardMarkup(inline_keyboard=[
 ])
 
 chat_kb = ReplyKeyboardMarkup(
-    keyboard=[[KeyboardButton(text="Следующий"), KeyboardButton(text="Стоп")],
-              [KeyboardButton(text="Заблокировать"), KeyboardButton(text="Купить VIP")]],
+    keyboard=[
+        [KeyboardButton(text="Следующий"), KeyboardButton(text="Стоп")],
+        [KeyboardButton(text="Заблокировать"), KeyboardButton(text="Купить VIP")]
+    ],
     resize_keyboard=True
 )
 
-# ====================== ПОИСК ПАР ======================
 async def matchmaking_loop():
-    logging.info("Задача matchmaking_loop запущена")
+    logging.debug("matchmaking_loop запущена")
     while True:
         await asyncio.sleep(3)
         logging.info(f"Проверка очереди: {len(queue)} человек")
@@ -65,35 +68,86 @@ async def matchmaking_loop():
             u2 = queue.pop(0)
             active_chats[u1] = u2
             active_chats[u2] = u1
-            logging.info(f"Пара найдена: {u1} <-> {u2}")
-            await bot.send_message(u1, "✅ Пара найдена! Общайтесь анонимно 🔥", reply_markup=chat_kb)
-            await bot.send_message(u2, "✅ Пара найдена! Общайтесь анонимно 🔥", reply_markup=chat_kb)
+            logging.info(f"Пара соединена: {u1} <-> {u2}")
+            await bot.send_message(u1, "Пара найдена! 🔥", reply_markup=chat_kb)
+            await bot.send_message(u2, "Пара найдена! 🔥", reply_markup=chat_kb)
 
-# ====================== ХЕНДЛЕРЫ ======================
 @dp.message(CommandStart())
 async def start(message: types.Message, state: FSMContext):
-    logging.info(f"Команда /start от {message.from_user.id}")
+    logging.info(f"/start от {message.from_user.id}")
+    await state.clear()  # сбросим состояние на всякий случай
     user = await get_user(message.from_user.id)
+    kb = ReplyKeyboardMarkup(keyboard=[[KeyboardButton(text="Найти собеседника")]], resize_keyboard=True)
     if user:
-        kb = ReplyKeyboardMarkup(keyboard=[[KeyboardButton("Найти собеседника")]], resize_keyboard=True)
-        await message.answer("Привет! Анкета уже есть. Нажми кнопку 👇", reply_markup=kb)
+        await message.answer("Анкета готова. Нажми 'Найти собеседника'", reply_markup=kb)
     else:
-        await message.answer("Привет! Заполни анкету:", reply_markup=gender_kb)
+        await message.answer("Заполни анкету. Пол:", reply_markup=gender_kb)
         await state.set_state(Form.gender)
 
-# ... (остальные хендлеры gender, age, find_partner, chat_controls, forward_message — точно как в предыдущей версии, они не менялись)
+@dp.message(Form.gender)
+async def process_gender(message: types.Message, state: FSMContext):
+    logging.info(f"Пол выбран: {message.text} от {message.from_user.id}")
+    gender = message.text.strip()
+    if gender not in ["Мужчина", "Женщина", "Другой"]:
+        await message.answer("Выбери из кнопок.")
+        return
+    await state.update_data(gender=gender)
+    await message.answer("Возраст:", reply_markup=types.ReplyKeyboardRemove())
+    await message.answer("Выбери:", reply_markup=age_kb)
+    await state.set_state(Form.age)
 
-# (Чтобы не делать сообщение слишком длинным, я оставил только изменённую часть. Полный код с остальными хендлерами я могу дать отдельно, но сначала обнови эти два файла)
+@dp.callback_query(Form.age)
+async def process_age(callback: types.CallbackQuery, state: FSMContext):
+    logging.info(f"Возраст выбран: {callback.data} от {callback.from_user.id}")
+    data = await state.get_data()
+    age_str = callback.data.split("_")[1]
+    age = {"18": 18, "25": 25, "31": 31, "36": 36, "40": 40}.get(age_str, 25)
+    await save_user(callback.from_user.id, data["gender"], age)
+    await callback.message.edit_text(f"Анкета сохранена! Пол: {data['gender']}, Возраст: {age_str}+")
+    await state.clear()
+    kb = ReplyKeyboardMarkup(keyboard=[[KeyboardButton(text="Найти собеседника")]], resize_keyboard=True)
+    await callback.message.answer("Готов! Нажми кнопку.", reply_markup=kb)
+
+@dp.message(Text("Найти собеседника"))
+async def find_partner(message: types.Message):
+    user_id = message.from_user.id
+    logging.info(f"Нажата 'Найти собеседника' от {user_id}")
+    await message.answer(f"DEBUG: Добавляю тебя в очередь. Текущий размер: {len(queue)}")
+
+    if user_id in blocked:
+        await message.answer("Ты заблокирован.")
+        return
+    if user_id in active_chats:
+        await message.answer("Ты уже в чате.")
+        return
+    if user_id in queue:
+        await message.answer("Ты уже ждёшь...")
+        return
+
+    queue.append(user_id)
+    logging.info(f"Добавлен в очередь {user_id}, теперь {len(queue)}")
+    await message.answer(f"Ищем... В очереди сейчас: {len(queue)} человек (DEBUG)")
+
+    global matchmaking_task
+    if matchmaking_task is None or matchmaking_task.done():
+        matchmaking_task = asyncio.create_task(matchmaking_loop())
+        logging.info("Запущена задача поиска")
+
+@dp.message()
+async def catch_all(message: types.Message):
+    logging.info(f"Поймано сообщение: '{message.text}' от {message.from_user.id}")
+    if message.text == "Найти собеседника":
+        await find_partner(message)
+    else:
+        await message.answer("Неизвестная команда. Нажми 'Найти собеседника' или /start")
 
 async def main():
-    print("Запуск main()...")
+    logging.info("main() старт")
     await init_db()
-    logging.info("База данных готова")
-    
+    logging.info("База готова")
     global matchmaking_task
     matchmaking_task = asyncio.create_task(matchmaking_loop())
-    logging.info("Задача поиска пар запущена")
-    
+    logging.info("matchmaking запущен")
     await dp.start_polling(bot)
 
 if __name__ == "__main__":
