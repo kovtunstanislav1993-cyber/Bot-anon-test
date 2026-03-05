@@ -22,13 +22,17 @@ async def init_db():
             )
         ''')
         await db.commit()
+    print("✅ База данных инициализирована")
 
 async def get_user(user_id: int):
     async with aiosqlite.connect(DB_FILE) as db:
-        cursor = await db.execute("SELECT gender, age, is_vip, vip_until FROM users WHERE user_id = ?", (user_id,))
+        cursor = await db.execute(
+            "SELECT gender, age, is_vip, vip_until FROM users WHERE user_id = ?", 
+            (user_id,)
+        )
         row = await cursor.fetchone()
         if row:
-            return {"gender": row[0], "age": row[1], "is_vip": row[2], "vip_until": row[3]}
+            return {"gender": row[0], "age": row[1], "is_vip": bool(row[2]), "vip_until": row[3]}
         return None
 
 async def save_user(user_id: int, gender: str, age: int):
@@ -47,13 +51,19 @@ async def set_vip(user_id: int, days: int = 1):
             (until, user_id)
         )
         await db.commit()
+    print(f"✅ VIP активирован для {user_id}")
 
 async def is_vip_user(user_id: int) -> bool:
     user = await get_user(user_id)
-    if user and user['is_vip']:
-        if user['vip_until'] > int(time.time()):
-            return True
-        # Сброс, если истёк
-        await db.execute("UPDATE users SET is_vip = 0, vip_until = 0 WHERE user_id = ?", (user_id,))
+    if not user or not user['is_vip']:
+        return False
+    if user['vip_until'] > int(time.time()):
+        return True
+    # Сброс истёкшего VIP
+    async with aiosqlite.connect(DB_FILE) as db:
+        await db.execute(
+            "UPDATE users SET is_vip = 0, vip_until = 0 WHERE user_id = ?",
+            (user_id,)
+        )
         await db.commit()
     return False
