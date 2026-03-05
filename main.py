@@ -3,7 +3,7 @@ import logging
 import os
 import sys
 from aiogram import Bot, Dispatcher, types
-from aiogram import F  # <-- magic filter F
+from aiogram import F
 from aiogram.filters import CommandStart
 from aiogram.fsm.context import FSMContext
 from aiogram.fsm.storage.memory import MemoryStorage
@@ -12,14 +12,13 @@ from aiogram.types import ReplyKeyboardMarkup, KeyboardButton, InlineKeyboardMar
 from database import init_db, get_user, save_user, is_vip_user
 from states import Form
 
-# Логирование — обязательно в stdout для Bothost
 print("=== BOT STARTED ===")
 logging.basicConfig(
     level=logging.DEBUG,
     format='%(asctime)s - %(levelname)s - %(message)s',
     handlers=[logging.StreamHandler(sys.stdout)]
 )
-logging.info("Бот запущен | DEBUG включён | aiogram 3.x")
+logging.info("Бот запущен | DEBUG включён")
 
 TOKEN = os.getenv("BOT_TOKEN")
 if not TOKEN:
@@ -62,16 +61,22 @@ chat_kb = ReplyKeyboardMarkup(
 async def matchmaking_loop():
     logging.debug("matchmaking_loop запущена")
     while True:
-        await asyncio.sleep(3)
-        logging.info(f"Проверка очереди: {len(queue)} человек")
-        while len(queue) >= 2:
-            u1 = queue.pop(0)
-            u2 = queue.pop(0)
-            active_chats[u1] = u2
-            active_chats[u2] = u1
-            logging.info(f"Пара соединена: {u1} <-> {u2}")
-            await bot.send_message(u1, "✅ Пара найдена! Общайтесь анонимно 🔥", reply_markup=chat_kb)
-            await bot.send_message(u2, "✅ Пара найдена! Общайтесь анонимно 🔥", reply_markup=chat_kb)
+        await asyncio.sleep(2)  # чаще проверяем — 2 секунды
+        logging.debug(f"Цикл проверки | В очереди: {len(queue)} | {queue}")
+        if len(queue) >= 2:
+            logging.info(f"Найдено минимум 2 человека в очереди: {queue}")
+            try:
+                u1 = queue.pop(0)
+                u2 = queue.pop(0)
+                active_chats[u1] = u2
+                active_chats[u2] = u1
+                logging.info(f"ПАРА СОЕДИНЕНА: {u1} ↔ {u2}")
+                await bot.send_message(u1, "✅ ПАРА НАЙДЕНА! Общайтесь анонимно 🔥\nСообщения теперь будут пересылаться.", reply_markup=chat_kb)
+                await bot.send_message(u2, "✅ ПАРА НАЙДЕНА! Общайтесь анонимно 🔥\nСообщения теперь будут пересылаться.", reply_markup=chat_kb)
+            except Exception as e:
+                logging.error(f"Ошибка при соединении пары: {e}")
+        else:
+            logging.debug("Очередь меньше 2 — ждём")
 
 @dp.message(CommandStart())
 async def start(message: types.Message, state: FSMContext):
@@ -87,7 +92,6 @@ async def start(message: types.Message, state: FSMContext):
 
 @dp.message(Form.gender)
 async def process_gender(message: types.Message, state: FSMContext):
-    logging.info(f"Пол: {message.text} от {message.from_user.id}")
     gender = message.text.strip()
     if gender not in ["Мужчина", "Женщина", "Другой"]:
         await message.answer("Выбери из кнопок.")
@@ -99,7 +103,6 @@ async def process_gender(message: types.Message, state: FSMContext):
 
 @dp.callback_query(Form.age)
 async def process_age(callback: types.CallbackQuery, state: FSMContext):
-    logging.info(f"Возраст: {callback.data} от {callback.from_user.id}")
     data = await state.get_data()
     age_str = callback.data.split("_")[1]
     age = {"18": 18, "25": 25, "31": 31, "36": 36, "40": 40}.get(age_str, 25)
@@ -109,11 +112,11 @@ async def process_age(callback: types.CallbackQuery, state: FSMContext):
     kb = ReplyKeyboardMarkup(keyboard=[[KeyboardButton(text="Найти собеседника")]], resize_keyboard=True)
     await callback.message.answer("Готов! Нажми кнопку.", reply_markup=kb)
 
-@dp.message(F.text == "Найти собеседника")  # <-- правильный magic filter вместо Text
+@dp.message(F.text == "Найти собеседника")
 async def find_partner(message: types.Message):
     user_id = message.from_user.id
-    logging.info(f"Кнопка 'Найти собеседника' от {user_id}")
-    await message.answer(f"DEBUG: Добавляю в очередь. Текущий размер: {len(queue)}")
+    logging.info(f"Кнопка 'Найти собеседника' нажата {user_id}")
+    await message.answer(f"DEBUG: Добавляю в очередь. Было: {len(queue)}, стало: {len(queue)+1}")
 
     if user_id in blocked:
         await message.answer("Ты заблокирован.")
@@ -126,29 +129,26 @@ async def find_partner(message: types.Message):
         return
 
     queue.append(user_id)
-    logging.info(f"Добавлен {user_id}, очередь: {len(queue)}")
+    logging.info(f"Добавлен {user_id} в очередь → {queue}")
     await message.answer(f"Ищем... В очереди: {len(queue)} (DEBUG)")
 
     global matchmaking_task
     if matchmaking_task is None or matchmaking_task.done():
         matchmaking_task = asyncio.create_task(matchmaking_loop())
-        logging.info("Задача поиска запущена")
+        logging.info("Задача matchmaking запущена заново")
 
 @dp.message()
 async def catch_all(message: types.Message):
-    logging.info(f"Любое сообщение: '{message.text}' от {message.from_user.id}")
-    if message.text == "Найти собеседника":
-        await find_partner(message)
-    else:
-        await message.answer("Нажми 'Найти собеседника' или /start")
+    logging.info(f"Поймано сообщение: '{message.text}' от {message.from_user.id}")
+    await message.answer("Нажми 'Найти собеседника' или /start")
 
 async def main():
-    logging.info("main() старт")
+    logging.info("main() запущен")
     await init_db()
     logging.info("База готова")
     global matchmaking_task
     matchmaking_task = asyncio.create_task(matchmaking_loop())
-    logging.info("matchmaking запущен")
+    logging.info("matchmaking запущен при старте")
     await dp.start_polling(bot)
 
 if __name__ == "__main__":
